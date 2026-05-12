@@ -21,6 +21,7 @@ type staticModelsJSON struct {
 	CodexPro    []*ModelInfo `json:"codex-pro"`
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
+	Zai         []*ModelInfo `json:"zai"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -218,4 +219,9 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 	}
 
 	return nil
+}
+
+// GetZaiModels returns the Zai model definitions.
+func GetZaiModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Zai)
 }
