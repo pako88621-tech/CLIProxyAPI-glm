@@ -28,8 +28,10 @@ func ZaiCreds(a *cliproxyauth.Auth) string {
 	if a == nil {
 		return ""
 	}
-	if tk := a.Attributes["access_token"]; tk != "" {
-		return tk
+	// Fallback to extract from AccountInfo
+	_, info := a.AccountInfo()
+	if info != "" {
+		return "Bearer " + info
 	}
 	return ""
 }

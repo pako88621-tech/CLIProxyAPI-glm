@@ -132,6 +132,8 @@ func (e *ZaiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		defer close(out)
 		defer httpResp.Body.Close()
 
+		tb := &zaitranslator.ToolCallBuffer{}
+
 		for {
 			line, err := reader.ReadBytes('\n')
 			if err != nil {
@@ -156,7 +158,7 @@ func (e *ZaiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				continue
 			}
 
-			chunk, errTranslate := zaitranslator.TranslateStreamResponse(dataStr, model, chatID)
+			chunk, errTranslate := zaitranslator.TranslateStreamResponse(dataStr, model, chatID, tb)
 			if errTranslate != nil || chunk == nil {
 				continue
 			}
