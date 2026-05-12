@@ -34,3 +34,4 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/openai/chat-completions"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/openai/responses"
 )
+import _ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/zai"
