@@ -11,16 +11,16 @@ Questo documento rappresenta il piano operativo super dettagliato (Master Plan) 
 - **File target:** `internal/registry/models/models.json`
 - **Procedura:**
   1. Individuare il nodo `"zai"`.
-  2. Per `glm-5.1`: Modificare `"context_length"` a `200000`, `"max_completion_tokens"` a `8192`.
+  2. Per `glm-5.1`: Modificare `"context_length"` a `200000`, `"max_completion_tokens"` a `131072`.
   3. Aggiungere blocco `"thinking"`:
      ```json
      "thinking": {
        "min": 1024,
-       "max": 64000,
+       "max": 131072,
        "zero_allowed": true
      }
      ```
-  4. Per `glm-5`, `glm-4.7`, e `glm-4.5`: Impostare `"context_length"` a `128000`, `"max_completion_tokens"` a `4096`. Aggiungere `"thinking"` max a `32000`.
+  4. Per `glm-5`, `glm-4.7`, e `glm-4.5`: Impostare `"context_length"` a `200000`, `"max_completion_tokens"` a `131072`. Aggiungere `"thinking"` max a `131072`.
 
 ### Task 1.2: Allineamento Strutture Golang
 - **File target:** `internal/registry/model_definitions.go`
