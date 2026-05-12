@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,9 +64,22 @@ type ChatCompletionChunkChoice struct {
 }
 
 type ChatCompletionChunkDelta struct {
-	Role             string `json:"role,omitempty"`
-	Content          string `json:"content,omitempty"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Role             string     `json:"role,omitempty"`
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+}
+
+type ToolCall struct {
+	Index    int          `json:"index"`
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"`
+	Function ToolFunction `json:"function,omitempty"`
+}
+
+type ToolFunction struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type ChatCompletionChunk struct {
@@ -129,6 +143,27 @@ func TranslateRequest(rawJSON []byte, model string) ([]byte, error) {
 		prevID = &tmpID
 	}
 
+	// Option B: Inject Tool Calling Instructions if tools exist in request
+	if root.Get("tools").Exists() {
+		toolsJSON := root.Get("tools").Raw
+		instruction := "\n\nSei un agente in grado di usare strumenti. Se vuoi usare lo strumento X, rispondi ESATTAMENTE in formato XML <tool_call><name>X</name><args>...</args></tool_call>\n" + toolsJSON
+
+		// Append this to the last message (assuming there is one)
+		if lastID != "" {
+			msg := messagesMap[lastID]
+			msg.Content += instruction
+			messagesMap[lastID] = msg
+		}
+	}
+
+	enableThinking := true
+	if root.Get("thinking.budget_tokens").Exists() {
+		budget := root.Get("thinking.budget_tokens").Int()
+		if budget == 0 {
+			enableThinking = false
+		}
+	}
+
 	zaiReq := ZaiChatCreateRequest{
 		Chat: ZaiChat{
 			ID:     "",
@@ -143,7 +178,7 @@ func TranslateRequest(rawJSON []byte, model string) ([]byte, error) {
 			Flags:          []any{},
 			Features:       []any{},
 			McpServers:     []any{},
-			EnableThinking: true,
+			EnableThinking: enableThinking,
 			AutoWebSearch:  false,
 			MessageVersion: 1,
 			Extra:          make(map[string]any),
@@ -155,7 +190,13 @@ func TranslateRequest(rawJSON []byte, model string) ([]byte, error) {
 	return json.Marshal(zaiReq)
 }
 
-func TranslateStreamResponse(data []byte, model string, id string) (*ChatCompletionChunk, error) {
+// ToolCallBuffer is used to accumulate XML fragments across multiple chunks
+type ToolCallBuffer struct {
+	Active bool
+	Buffer string
+}
+
+func TranslateStreamResponse(data []byte, model string, id string, tb *ToolCallBuffer) (*ChatCompletionChunk, error) {
 	var zResp ZaiStreamResponse
 	if err := json.Unmarshal(data, &zResp); err != nil {
 		return nil, fmt.Errorf("failed to decode zai response: %w", err)
@@ -183,7 +224,58 @@ func TranslateStreamResponse(data []byte, model string, id string) (*ChatComplet
 	if zResp.Data.Phase == "thinking" {
 		chunk.Choices[0].Delta.ReasoningContent = zResp.Data.DeltaContent
 	} else {
-		chunk.Choices[0].Delta.Content = zResp.Data.DeltaContent
+		content := zResp.Data.DeltaContent
+
+		if tb.Active {
+			tb.Buffer += content
+
+			// Check if we reached the end of the tool call
+			if strings.Contains(tb.Buffer, "</tool_call>") {
+				// We have a full tool call
+				nameStart := strings.Index(tb.Buffer, "<name>") + 6
+				nameEnd := strings.Index(tb.Buffer, "</name>")
+
+				argsStart := strings.Index(tb.Buffer, "<args>") + 6
+				argsEnd := strings.Index(tb.Buffer, "</args>")
+
+				if nameStart > 5 && nameEnd > nameStart && argsStart > 5 && argsEnd > argsStart {
+					name := tb.Buffer[nameStart:nameEnd]
+					args := tb.Buffer[argsStart:argsEnd]
+
+					chunk.Choices[0].Delta.Content = ""
+					chunk.Choices[0].Delta.ToolCalls = []ToolCall{
+						{
+							Index: 0,
+							ID:    "call_" + uuid.New().String()[:8],
+							Type:  "function",
+							Function: ToolFunction{
+								Name:      name,
+								Arguments: args,
+							},
+						},
+					}
+				} else {
+					// Fallback if parsing fails
+					chunk.Choices[0].Delta.Content = tb.Buffer
+				}
+
+				// Reset buffer
+				tb.Active = false
+				tb.Buffer = ""
+			} else {
+				// Still accumulating, do not output anything yet
+				chunk.Choices[0].Delta.Content = ""
+			}
+		} else {
+			// Fast check if it might be starting a tool call
+			if strings.HasPrefix(content, "<tool_call>") || (len(content) > 0 && content[0] == '<' && strings.HasPrefix("<tool_call>", content)) {
+				tb.Active = true
+				tb.Buffer = content
+				chunk.Choices[0].Delta.Content = "" // suppress output while buffering
+			} else {
+				chunk.Choices[0].Delta.Content = content
+			}
+		}
 	}
 
 	return chunk, nil
@@ -198,13 +290,35 @@ func NewZaiRequestTransform() translator.RequestTransform {
 
 func NewZaiResponseStreamTransform() translator.ResponseStreamTransform {
 	return func(ctx context.Context, model string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
-		return [][]byte{rawJSON}
+		// Create a local buffer if param is nil, though in reality param should be persistent across stream chunks
+		var tb *ToolCallBuffer
+		if param != nil && *param != nil {
+			tb = (*param).(*ToolCallBuffer)
+		} else {
+			tb = &ToolCallBuffer{}
+			if param != nil {
+				*param = tb
+			}
+		}
+
+		chunk, err := TranslateStreamResponse(rawJSON, model, "stream-id", tb)
+		if err != nil || chunk == nil {
+			return [][]byte{rawJSON} // Fallback
+		}
+		res, _ := json.Marshal(chunk)
+		return [][]byte{res}
 	}
 }
 
 func NewZaiResponseNonStreamTransform() translator.ResponseNonStreamTransform {
 	return func(ctx context.Context, model string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
-		return rawJSON
+		tb := &ToolCallBuffer{}
+		chunk, err := TranslateStreamResponse(rawJSON, model, "id-123", tb)
+		if err != nil || chunk == nil {
+			return rawJSON
+		}
+		res, _ := json.Marshal(chunk)
+		return res
 	}
 }
 
